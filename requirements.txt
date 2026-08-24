@@ -1,0 +1,11 @@
+# Epub Forge 运行依赖（Windows 桌面版）
+# 说明：项目自带 tools/fetch_deps.py 可免 pip 安装这些依赖到 .deps/，
+# 也可以直接用 pip 安装本文件。
+ebooklib>=0.18
+PySide6>=6.6
+python-docx>=1.1
+PyMuPDF>=1.23
+markdown>=3.5
+beautifulsoup4>=4.12
+lxml>=4.9
+Pillow>=9.0

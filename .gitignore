@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# 依赖与构建产物
+.deps/
+.wheels/
+.tmp/
+dist/
+build/
+*.spec
+fetch_deps.log
+
+# 测试输出
+test_out/
+
+# IDE
+.idea/
+.vscode/
