@@ -37,7 +37,7 @@ def main():
     # 1) 分析 novel.txt → 自动填充书名
     doc, chs, notes = _analyze_task(os.path.join(SAMPLES, "novel.txt"),
                                     SegmentOptions(mode="auto", max_level=1), "auto",
-                                    lambda p, m: None)
+                                    True, lambda p, m: None)
     w.source_path = os.path.join(SAMPLES, "novel.txt")  # 模拟真实流程中 _set_source 已设置
     w._on_analyzed((doc, chs, notes))
     fails += 0 if ok(w.title_edit.text() == "雾隐山庄",

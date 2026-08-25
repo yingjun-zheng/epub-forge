@@ -41,10 +41,13 @@ def detect_format(path: str | Path) -> str | None:
 # 入口
 # --------------------------------------------------------------------------
 
-def parse_document(path: str | Path, txt_para_mode: str = "auto") -> ParsedDocument:
+def parse_document(path: str | Path, txt_para_mode: str = "auto",
+                   ocr: bool = False, progress_cb=None) -> ParsedDocument:
     """按扩展名分派到具体解析器。
 
     txt_para_mode: TXT 段落识别方式 —— auto（启发式）/ blank（空行分段）/ line（每行一段）
+    ocr:           PDF 无文字层时是否启用 OCR 识别（扫描版）
+    progress_cb:   可选回调 cb(percent, msg)，用于报告解析进度
     """
     path = Path(path)
     fmt = detect_format(path)
@@ -63,6 +66,9 @@ def parse_document(path: str | Path, txt_para_mode: str = "auto") -> ParsedDocum
     if fmt == "docx":
         return _parse_docx(path)
     if fmt == "pdf":
+        return _parse_pdf(path, ocr=ocr, progress_cb=progress_cb)
+    raise ValueError(f"未实现的解析器: {fmt}")
+    if fmt == "pdf":
         return _parse_pdf(path)
     raise ValueError(f"未实现的解析器: {fmt}")
 
@@ -75,11 +81,12 @@ _SENT_ENDINGS = ("。", "！", "？", "”", "』", "」", "…", "…", ".", "!
                  '"', "'", "）", ")", "】", "]", "》", "〉", "；", "，", ";", ",")
 
 
-def _detect_txt_para_mode(lines: list[str]) -> str:
+def _detect_txt_para_mode(lines: list[str], cleaned: str) -> str:
     """启发式判断 TXT 段落排布。
 
     逐行排布（每行一个自然段，常见于中文小说）: 大多数行以句末标点结尾且行较短。
     空行分段: 段落之间有空行，段内多行。
+    无空行/少空行且行尾标点少: 按行分段兜底——避免把整章并成一大段“文字墙”。
     """
     if len(lines) < 3:
         return "blank"
@@ -88,7 +95,43 @@ def _detect_txt_para_mode(lines: list[str]) -> str:
     avg_len = sum(len(ln) for ln in lines) / len(lines)
     if ratio >= 0.55 and avg_len <= 80:
         return "line"
+    # 空行数量明显偏少（平均每 3 行不足 1 个空行）→ 段落边界只能靠行
+    blank_count = max(len(re.split(r"\n[ \t]*\n", cleaned)) - 1, 0)
+    if blank_count * 3 < len(lines):
+        return "line"
     return "blank"
+
+
+# 超长段落的安全分行：仅在句末标点处切开，避免“文字墙”
+_LONG_PARA_MIN = 1200
+_LONG_PARA_CHUNK = 600
+_SENT_SPLIT_RE = re.compile(r"(?<=[。！？…”』」])")
+
+
+def _split_long_paras(blocks: list[Block]) -> list[Block]:
+    """把明显被合并的超长段落在句末标点处切开成多个段落（保留原文顺序）。"""
+    out: list[Block] = []
+    for b in blocks:
+        if b.kind == "para" and len(b.text) > _LONG_PARA_MIN:
+            pieces = [s for s in _SENT_SPLIT_RE.split(b.text) if s.strip()]
+            if len(pieces) > 1:
+                groups: list[str] = []
+                cur = ""
+                for p in pieces:
+                    if len(cur) + len(p) > _LONG_PARA_CHUNK and cur:
+                        groups.append(cur)
+                        cur = p
+                    else:
+                        cur += p
+                if cur:
+                    groups.append(cur)
+                for g in groups:
+                    g = g.strip()
+                    if g:
+                        out.append(Block(kind="para", text=g))
+                continue
+        out.append(b)
+    return out
 
 
 def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument:
@@ -96,7 +139,7 @@ def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument
     lines = [ln.strip() for ln in cleaned.split("\n") if ln.strip()]
     mode = para_mode
     if mode == "auto":
-        mode = _detect_txt_para_mode(lines)
+        mode = _detect_txt_para_mode(lines, cleaned)
 
     blocks: list[Block] = []
     if mode == "line":
@@ -109,6 +152,9 @@ def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument
             para = " ".join(ln.strip() for ln in raw.split("\n") if ln.strip())
             if para:
                 blocks.append(Block(kind="para", text=para))
+
+    # 超长段落自动在句末分行（识别“顶行/无空行”合并出的文字墙）
+    blocks = _split_long_paras(blocks)
 
     title = infer_title_from_filename(path)
     # 首段若为短单行且非句子 → 视为书名（如「雾隐山庄」）
@@ -368,27 +414,56 @@ def _extract_docx_images(d, doc: ParsedDocument):
 # PDF
 # --------------------------------------------------------------------------
 
-def _parse_pdf(path: Path) -> ParsedDocument:
+def _parse_pdf(path: Path, ocr: bool = False, progress_cb=None) -> ParsedDocument:
     try:
         import pymupdf as fitz  # PyMuPDF 新包名
     except ImportError:
         import fitz  # 旧名兼容
+
+    from .ocr import PdfOcr
 
     pdf = fitz.open(str(path))
     try:
         meta = pdf.metadata or {}
         title = (meta.get("title") or "").strip() or infer_title_from_filename(path)
         toc = pdf.get_toc()  # [[level, title, page], ...]
+        toc = _filter_toc_page_numbers(toc)
         warnings: list[str] = []
         blocks: list[Block] = []
 
-        # 每页: (文本块列表, 行级字号信息)
-        pages_blocks: list[list[str]] = []
+        ocr_engine = PdfOcr() if ocr else None
+        ocr_pages: list[int] = []
+        total_text_chars = 0
+
+        # 每页内容: list[(kind, text)]，kind ∈ {'heading','para'}；以及行级字号信息
+        pages_content: list[list[tuple[str, str]]] = []
         pages_sizes: list[list[tuple[str, float]]] = []
-        for pno in range(pdf.page_count):
+        page_count = pdf.page_count
+        for pno in range(page_count):
             page = pdf[pno]
             text_blocks = [b[4].strip() for b in page.get_text("blocks") if b[6] == 0]
-            pages_blocks.append([b for b in text_blocks if b])
+            text_blocks = [b for b in text_blocks if b]
+            total_text_chars += sum(len(b) for b in text_blocks)
+
+            # 无文字层且启用 OCR → 识别该页（含单行标题分类）
+            if not text_blocks and ocr_engine is not None:
+                if progress_cb:
+                    progress_cb(min(60.0, 5 + (pno + 1) * 55 / max(page_count, 1)),
+                                f"OCR 识别第 {pno + 1}/{page_count} 页…")
+                try:
+                    items = ocr_engine.page_blocks(page)
+                    if items:
+                        pages_content.append(items)
+                        ocr_pages.append(pno + 1)
+                    else:
+                        pages_content.append([])
+                except RuntimeError as exc:
+                    warnings.append(str(exc))
+                    ocr_engine = None  # 引擎不可用则放弃后续 OCR
+                    pages_content.append([])
+            else:
+                pages_content.append([("para", tb) for tb in text_blocks])
+
             lines = []
             for b in page.get_text("dict").get("blocks", []):
                 if b.get("type") != 0:
@@ -400,41 +475,75 @@ def _parse_pdf(path: Path) -> ParsedDocument:
                         lines.append((text.strip(), size))
             pages_sizes.append(lines)
 
+        def emit_page(pno: int):
+            for kind, text in pages_content[pno]:
+                if kind == "heading":
+                    blocks.append(Block(kind="heading", text=text, level=1))
+                else:
+                    blocks.append(Block(kind="para", text=text))
+
         if toc:
             # 大纲驱动: 标题插到对应页开头
             per_page: dict[int, list[tuple[int, str]]] = {}
             for lvl, t, pg in toc:
-                if 1 <= pg <= pdf.page_count:
+                if 1 <= pg <= page_count:
                     per_page.setdefault(pg, []).append((lvl, t))
-            for pno in range(pdf.page_count):
+            for pno in range(page_count):
                 for lvl, t in per_page.get(pno + 1, []):
                     blocks.append(Block(kind="heading", text=t, level=min(lvl, 6)))
-                blocks.extend(Block(kind="para", text=tb) for tb in pages_blocks[pno])
+                emit_page(pno)
             warnings.append(f"已使用 PDF 书签大纲识别章节（{len(toc)} 条）。")
         else:
-            # 字号启发式: 明显大于正文中位数的短行 → 标题
+            # 字号启发式: 明显大于正文主字号的短行 → 标题
             headings = _detect_pdf_headings(pages_sizes)
             head_by_page: dict[int, list[str]] = {}
             for pno, t in headings:
                 head_by_page.setdefault(pno, []).append(t)
-            for pno in range(pdf.page_count):
+            for pno in range(page_count):
                 for t in head_by_page.get(pno, []):
                     blocks.append(Block(kind="heading", text=t, level=1))
-                blocks.extend(Block(kind="para", text=tb) for tb in pages_blocks[pno])
+                emit_page(pno)
             if headings:
                 warnings.append(f"PDF 无书签，按字号启发式识别到 {len(headings)} 个疑似标题。")
             else:
                 warnings.append("PDF 无书签且未识别到标题，将按篇幅自动分章。")
 
+        # 扫描版提示（无文字层）
+        if ocr_pages:
+            warnings.append(f"扫描版 PDF：{len(ocr_pages)}/{page_count} 页无文字层，已通过 OCR 识别。")
+        elif total_text_chars == 0:
+            if ocr_engine is None and ocr:
+                warnings.append("OCR 引擎不可用，未识别扫描页。请安装 rapidocr_onnxruntime 后重试。")
+            else:
+                warnings.append(
+                    "该 PDF 无文字层（扫描版），未提取到正文。"
+                    "请在 GUI 勾选「扫描版自动 OCR」或 CLI 加 --ocr 进行识别。")
+
+        # 超长段落自动在句末分行（PDF 文本块偶尔会合并成大段）
+        blocks = _split_long_paras(blocks)
+
         doc = ParsedDocument(source_path=str(path), fmt="pdf", title=title,
                              blocks=blocks, warnings=warnings)
         # 内容完整性自检：blocks 模式提取的文字 vs text 模式
-        src_chars = sum(len(pdf[p].get_text("text")) for p in range(pdf.page_count))
+        src_chars = sum(len(pdf[p].get_text("text")) for p in range(page_count))
         if src_chars > 200:
             _integrity_check(doc, "", source_chars=src_chars)
         return doc
     finally:
         pdf.close()
+
+
+_TOC_PAGENUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
+
+
+def _filter_toc_page_numbers(toc: list) -> list:
+    """过滤 FreePic2Pdf 等工具生成的「纯页码」书签（如 1..247），保留真实章节名。"""
+    if not toc:
+        return toc
+    digits = [t for t in toc if _TOC_PAGENUM_RE.match(t[1] or "")]
+    if digits and len(digits) / len(toc) > 0.5:
+        return [t for t in toc if not _TOC_PAGENUM_RE.match(t[1] or "")]
+    return toc
 
 
 def _detect_pdf_headings(pages_sizes: list[list[tuple[str, float]]]) -> list[tuple[int, str]]:

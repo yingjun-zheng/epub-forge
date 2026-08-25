@@ -131,10 +131,14 @@ def run():
                 ("regex", SegmentOptions(mode="regex", custom_regex=r"^第[一二三四五六七八九十]+章")),
                 ("size", SegmentOptions(mode="size", paras_per_chunk=2)),
                 ("heading", SegmentOptions(mode="heading", max_level=1)),
+                ("no_split", SegmentOptions(mode="auto", no_split=True)),
             ]:
                 chs, notes = segment(doc, opts)
                 titles = " | ".join(c.title for c in chs)
                 print(f"\n[模式 {mode}] {len(chs)} 章: {titles[:100]}")
+                if mode == "no_split" and len(chs) != 1:
+                    failed += 1
+                    print(f"!! no_split 应只有 1 章，实际 {len(chs)}")
         except Exception as exc:
             failed += 1
             print(f"!! 附加模式测试失败: {exc}")

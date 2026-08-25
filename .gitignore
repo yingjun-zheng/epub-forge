@@ -16,6 +16,9 @@ fetch_deps.log
 # 测试输出
 test_out/
 
+# 运行日志
+logs/
+
 # IDE
 .idea/
 .vscode/

@@ -49,6 +49,7 @@ DEFAULT = [
     "PyMuPDF",
     "PySide6-Essentials",   # QtCore/QtGui/QtWidgets，桌面 GUI 够用
     "shiboken6",            # PySide6 绑定层（自动解析，写在这里保底）
+    "rapidocr_onnxruntime", # 扫描版 PDF OCR（中文），onnxruntime/opencv 等自动解析
 ]
 
 
@@ -122,6 +123,20 @@ def best_wheel(data: dict):
     return candidates[0]
 
 
+def _already_installed(dist_name: str) -> bool:
+    """按 dist-info 目录判断包是否已解压到 .deps。"""
+    norm = (dist_name or "").lower().replace("-", "_")
+    if not norm:
+        return False
+    try:
+        for entry in os.listdir(DEPS_DIR):
+            if entry.lower().startswith(norm) and entry.lower().endswith(".dist-info"):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def fetch(name: str, seen: set):
     """递归拉取并解压 name 及其依赖。"""
     key = name.lower()
@@ -158,9 +173,20 @@ def fetch(name: str, seen: set):
 
     print(f"[ok] 缓存命中 {f['filename']}")
     os.makedirs(DEPS_DIR, exist_ok=True)
-    with zipfile.ZipFile(whl) as z:
-        z.extractall(DEPS_DIR)
-    print(f"[ok] 解压 {parsed[0]} {parsed[1]}")
+    # 已安装（存在对应 dist-info）则跳过解压，避免覆盖 .pyd 等二进制文件被安全策略拒绝
+    if _already_installed(parsed[0]):
+        print(f"[ok] 已安装 {parsed[0]}，跳过解压")
+    else:
+        try:
+            with zipfile.ZipFile(whl) as z:
+                z.extractall(DEPS_DIR)
+            print(f"[ok] 解压 {parsed[0]} {parsed[1]}")
+        except PermissionError:
+            # 部分二进制文件（.pyd/.dll）可能被覆盖写入拒绝；若包已存在则视为成功
+            if _already_installed(parsed[0]):
+                print(f"[ok] {parsed[0]} 已存在（部分文件更新被跳过）")
+            else:
+                raise
 
     # 递归处理依赖：解析 marker，剔除不适用于本环境的
     # 注意: requires_dist 位于 PyPI JSON 的顶层 info 中（urls 条目里没有）

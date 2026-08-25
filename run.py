@@ -20,6 +20,10 @@ if os.path.isdir(DEPS) and DEPS not in sys.path:
         os.environ.setdefault("PATH", pyside_pkg + os.pathsep + os.environ.get("PATH", ""))
 
 
+def _cli_progress(pct: float, msg: str):
+    print(f"    {pct:3.0f}%  {msg}")
+
+
 def _cli_main(argv):
     # Windows 默认 GBK 控制台：强制 UTF-8 输出避免中文乱码
     for stream in (sys.stdout, sys.stderr):
@@ -27,6 +31,7 @@ def _cli_main(argv):
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    from epubforge import logutil
     from epubforge.builder import BookMeta, build_epub
     from epubforge.chapter import SegmentOptions, segment
     from epubforge.sources import parse_document
@@ -49,13 +54,19 @@ def _cli_main(argv):
     p.add_argument("--min-chars", type=int, default=500, help="少于该字数不分章（默认 500）")
     p.add_argument("--txt-paras", default="auto", choices=["auto", "blank", "line"],
                    help="TXT 分段方式：auto 自动 / blank 空行分段 / line 每行一段（默认 auto）")
+    p.add_argument("--ocr", action="store_true",
+                   help="扫描版 PDF 启用 OCR 识别（无文字层时，速度较慢）")
+    p.add_argument("--no-split", action="store_true",
+                   help="不分章：整本作为一章")
     args = p.parse_args(argv)
 
     print(f"[1/3] 解析 {args.input} …")
-    doc = parse_document(args.input, txt_para_mode=args.txt_paras)
+    logutil.log(f"CLI 转换开始: {args.input} (mode={args.mode}, ocr={args.ocr})")
+    doc = parse_document(args.input, txt_para_mode=args.txt_paras,
+                         ocr=args.ocr, progress_cb=_cli_progress)
     opts = SegmentOptions(mode=args.mode, max_level=args.max_level,
                           custom_regex=args.regex, paras_per_chunk=args.paras,
-                          min_chars=args.min_chars)
+                          min_chars=args.min_chars, no_split=args.no_split)
     print(f"[2/3] 分章（{opts.mode}）…")
     chapters, notes = segment(doc, opts)
     for n in notes:
@@ -92,6 +103,7 @@ def _cli_main(argv):
 
     build_epub(chapters, meta, out_path, images=doc.images,
                cover_bytes=cover_bytes, cover_name=cover_name, progress_cb=cb)
+    logutil.log(f"CLI 转换完成: {out_path}（{human_size(os.path.getsize(out_path))}，{len(chapters)} 章）")
     print(f"完成: {out_path}（{human_size(os.path.getsize(out_path))}）")
     return 0
 

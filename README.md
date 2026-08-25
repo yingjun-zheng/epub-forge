@@ -13,8 +13,14 @@
   - 结构标题不足时，用正则探测纯文本标题：`第X章 / 卷X / Chapter N / 一、 / 1.` 等（中英文）
   - 都没有时按篇幅兜底切分（可调每章段落数与最小字数）
   - 也支持**自定义正则**匹配任意章节起点
+  - 可勾选「不分章（整本作为一章）」跳过分章（GUI 单选框 / CLI `--no-split`）
+- **扫描版 PDF OCR**：PDF 无文字层（扫描版）时自动启用本地 OCR（RapidOCR/PP-OCRv4，中文），
+  单行标题识别自动分章；GUI 勾选「扫描版自动 OCR」或 CLI 加 `--ocr`
 - **分章预览与编辑**：章节列表实时预览，双击重命名、右键/按钮合并章节
-- **智能段落识别**：TXT 自动识别两种排布——空行分段 / 逐行一段（中文小说常见），也可手动指定
+- **智能段落识别**：TXT 自动识别三种排布——空行分段 / 逐行一段 / 无空行按行分段
+  （避免「顶行」文件被并成文字墙）；超长段落自动在句末标点处分行
+- **自动排版行距**：段落输出内置行距 1.9、段距 0.9em、首行缩进 2 字（内联样式兜底，
+  即使阅读器忽略外部 CSS 也不会挤在一起）；扫描版 OCR 按行距/缩进自动分段
 - **内容完整性自检**：解析后对比源文字数，疑似丢字时在日志中给出警告；HTML/MD 的裸文本（无标签包裹的文字）完整保留
 - **排版**：首行缩进、段间距、行高、章标题样式内置 CSS；源文档标题不重复渲染
 - **元数据**：书名、作者、出版社、语言、简介，输出 EPUB3 标准元数据
@@ -46,6 +52,7 @@ python run.py input.docx -o out.epub --author 张三 --title 我的书
 python run.py novel.txt --mode auto --max-level 1
 python run.py book.md --mode size --paras 10
 python run.py manual.pdf --cover cover.png --outdir dist
+python run.py 扫描版.pdf --ocr -o 扫描版.epub        # 扫描版 PDF 走 OCR
 ```
 
 参数：
@@ -64,7 +71,9 @@ python run.py manual.pdf --cover cover.png --outdir dist
 | `--regex` | 自定义章节正则 | 空 |
 | `--paras` | 按篇幅时每章段落数 | 8 |
 | `--min-chars` | 少于该字数不分章 | 500 |
+| `--no-split` | 不分章：整本作为一章 | 关 |
 | `--txt-paras` | TXT 分段: auto/blank/line | auto |
+| `--ocr` | 扫描版 PDF 启用 OCR（无文字层时，速度较慢） | 关 |
 
 ## 分章策略说明
 
@@ -118,7 +127,9 @@ python build_exe.py
 
 ## 已知限制
 
-- PDF 图片暂不抽取（仅文本）；无书签的扫描版 PDF 无法提取文字
+- 扫描版 PDF（无文字层）默认不识别，需启用 OCR（GUI 勾选或 CLI `--ocr`）；OCR 速度约 5~8 秒/页
+- OCR 识别有少量错字（如 制→制约 误识），属正常现象
+- PDF 图片暂不抽取（仅文本）
 - 网络图片不自动下载
 - TXT 段落排布为启发式识别（自动模式），复杂排版可在 GUI「TXT 分段」或 CLI `--txt-paras` 手动指定
 

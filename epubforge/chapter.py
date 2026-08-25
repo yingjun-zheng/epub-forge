@@ -22,7 +22,7 @@ from .blocks import Block, Chapter, ParsedDocument
 TEXT_HEADING_PATTERNS = [
     re.compile(r"^第[0-9０-９一二三四五六七八九十百千万零两]{1,9}[章节回卷部篇集]"),
     re.compile(r"^卷[一二三四五六七八九十百千万零两]{1,4}"),
-    re.compile(r"^[【\[]?(?:序章|序言|前言|楔子|引子|尾声|终章|后记|番外)[】\]]?"),
+    re.compile(r"^[【\[]?(?:序章|序言|前言|楔子|引子|尾声|终章|后记|番外|绪论|引言|导论|目录|结语)[】\]]?"),
     re.compile(r"^(?:Chapter|CHAPTER|Chap\.?|Part|PART)\s+[0-9IVXLCDMivxlcdm]+"),
     re.compile(r"^[一二三四五六七八九十]{1,4}[、．.]\s*\S"),
     re.compile(r"^[0-9]{1,4}[\.、．]\s*\S"),
@@ -40,16 +40,18 @@ class SegmentOptions:
 
     def __init__(self, mode: str = "auto", max_level: int = 1,
                  custom_regex: str = "", paras_per_chunk: int = 8,
-                 min_chars: int = 500):
+                 min_chars: int = 500, no_split: bool = False):
         self.mode = mode            # auto | heading | regex | size
         self.max_level = max_level  # 0 = 不限级别
         self.custom_regex = custom_regex
         self.paras_per_chunk = paras_per_chunk
         self.min_chars = min_chars
+        self.no_split = no_split    # True = 整本作为一章，不执行分章
 
     def __repr__(self) -> str:  # pragma: no cover
         return (f"SegmentOptions(mode={self.mode}, max_level={self.max_level}, "
-                f"paras={self.paras_per_chunk}, min_chars={self.min_chars})")
+                f"paras={self.paras_per_chunk}, min_chars={self.min_chars}, "
+                f"no_split={self.no_split})")
 
 
 # --------------------------------------------------------------------------
@@ -62,6 +64,11 @@ def segment(doc: ParsedDocument, opts: SegmentOptions | None = None) -> tuple[li
     blocks = doc.blocks
     if not blocks:
         return [], ["源文档为空，没有可转换的内容。"]
+
+    # 不分章：整本作为一章
+    if opts.no_split:
+        title = doc.title or "正文"
+        return [Chapter(title, list(blocks))], ["已选择「不分章」，整本作为一章。"]
 
     starts: list[int] = []
 

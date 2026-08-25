@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -27,6 +28,7 @@ h1, h2, h3, h4, h5, h6 { font-family: "Noto Sans CJK SC", "Microsoft YaHei", san
                          margin: 1.6em 0 0.9em; line-height: 1.45;
                          text-align: left; text-indent: 0; }
 p { margin: 0 0 0.9em 0; text-indent: 2em; }
+p.para { margin: 0 0 0.9em 0; line-height: 1.9; text-indent: 2em; }
 p.noindent, li p, blockquote p { text-indent: 0; }
 blockquote { margin: 0.9em 1.5em; color: #555; border-left: 3px solid #ccc; padding-left: 1em; }
 pre { font-family: Consolas, monospace; font-size: 0.85em; background: #f6f6f6;
@@ -66,6 +68,22 @@ def _media_type(fname: str) -> str:
             "bmp": "image/bmp"}.get(ext, "application/octet-stream")
 
 
+# 段落的内联排版兜底：即使阅读器忽略外部 CSS，也能保证段距/行距/首行缩进
+PARA_INLINE_STYLE = "margin:0 0 0.9em 0; line-height:1.9; text-indent:2em;"
+
+_P_WRAP_RE = re.compile(r"^\s*<p[^>]*>(.*)</p>\s*$", re.S)
+
+
+def _para_inner(b: Block) -> str | None:
+    """取段落内容：b.html 若是简单 <p> 包装则抽取内部；否则返回 None（保持原样）。"""
+    if b.html:
+        m = _P_WRAP_RE.match(b.html)
+        if m:
+            return m.group(1)
+        return None
+    return "<br/>".join(escape_html(ln) for ln in b.text.split("\n"))
+
+
 def render_chapter(ch: Chapter, img_map: dict[str, str]) -> str:
     """章节 → XHTML 字符串。"""
     body: list[str] = []
@@ -79,10 +97,11 @@ def render_chapter(ch: Chapter, img_map: dict[str, str]) -> str:
             lvl = min(max(b.level or 2, 1), 6)
             body.append(f"<h{lvl}>{escape_html(b.text)}</h{lvl}>")
         elif b.kind == "para":
-            if b.html:
-                body.append(b.html)
+            inner = _para_inner(b)
+            if inner is None:
+                body.append(b.html)  # table/pre 等非 <p> 结构保持原样
             else:
-                body.append("<p>" + "<br/>".join(escape_html(ln) for ln in b.text.split("\n")) + "</p>")
+                body.append(f'<p class="para" style="{PARA_INLINE_STYLE}">{inner}</p>')
         elif b.kind == "pre":
             body.append(b.html if b.html else "<pre>" + escape_html(b.text) + "</pre>")
         elif b.kind == "hr":
