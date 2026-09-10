@@ -169,13 +169,16 @@ def build_epub(chapters: list[Chapter], meta: BookMeta, output_path: str | Path,
     book.add_item(style)
 
     # 图片
+    # 注意: 章节 XHTML 位于 text/ 子目录，正文里的图片引用必须写成
+    # ../images/xxx（相对章节文件解析），否则严格阅读器（Calibre 等）
+    # 会按 text/images/xxx 寻址而显示不出图片。
     img_map: dict[str, str] = {}
     for fname, data in (images or {}).items():
         safe = fname.replace("/", "_").replace("\\", "_")
         epub_fname = f"images/{safe}"
         book.add_item(epub.EpubImage(uid=f"img-{safe}", file_name=epub_fname,
                                      media_type=_media_type(safe), content=data))
-        img_map[fname] = epub_fname
+        img_map[fname] = f"../{epub_fname}"
 
     # 章节
     toc: list = []

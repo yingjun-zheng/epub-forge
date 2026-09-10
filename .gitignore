@@ -22,3 +22,4 @@ logs/
 # IDE
 .idea/
 .vscode/
+commit-message.txt

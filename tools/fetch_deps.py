@@ -20,11 +20,6 @@ import time
 import urllib.request
 import zipfile
 
-from packaging.markers import default_environment
-from packaging.requirements import Requirement
-from packaging.tags import sys_tags
-from packaging.utils import parse_wheel_filename
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEPS_DIR = os.path.join(ROOT, ".deps")
 WHEELS_DIR = os.path.join(ROOT, ".wheels")
@@ -97,6 +92,48 @@ def download_with_timeout(url: str, dest: str, timeout: int = 180,
         except OSError:
             pass
         return False
+
+
+def _ensure_packaging():
+    """fetch_deps 自身依赖 packaging（不在标准库，Python 3.13 也不再捆绑）：
+    缺失时先用本脚本的下载能力把 packaging 纯 Python wheel 解压到 .deps/，
+    再继续正常流程，保证「无 pip 裸环境」下本工具可自举。"""
+    try:
+        import packaging  # noqa: F401
+        return
+    except ImportError:
+        pass
+    print("[..] 缺少 packaging（本工具自身的依赖），下载并解压到 .deps/ …")
+    data = json.loads(http_get(PYPI_API.format(name="packaging")))
+    files = [f for f in data.get("urls", [])
+             if f["filename"].endswith("-py3-none-any.whl")]
+    if not files:
+        sys.exit("[!!] 未找到 packaging 的 py3-none-any wheel，"
+                 "请手动下载解压到 .deps/ 后重试")
+    os.makedirs(WHEELS_DIR, exist_ok=True)
+    os.makedirs(DEPS_DIR, exist_ok=True)
+    whl = os.path.join(WHEELS_DIR, files[0]["filename"])
+    candidates = [
+        files[0]["url"].replace("https://files.pythonhosted.org/packages/", m) for m in MIRRORS
+    ] + [files[0]["url"]]
+    for u in candidates:
+        if download_with_timeout(u, whl):
+            break
+    if not zipfile.is_zipfile(whl):
+        sys.exit("[!!] packaging 下载失败，无法继续。请手动安装 packaging 后重试")
+    with zipfile.ZipFile(whl) as z:
+        z.extractall(DEPS_DIR)
+    if DEPS_DIR not in sys.path:
+        sys.path.insert(0, DEPS_DIR)
+    print("[ok] packaging 就绪")
+
+
+_ensure_packaging()
+
+from packaging.markers import default_environment  # noqa: E402
+from packaging.requirements import Requirement  # noqa: E402
+from packaging.tags import sys_tags  # noqa: E402
+from packaging.utils import parse_wheel_filename  # noqa: E402
 
 
 def package_info(name: str) -> dict:

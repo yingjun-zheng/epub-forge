@@ -35,6 +35,13 @@ def main():
             os.path.join(HERE, "assets", "app.ico")) else "NONE",
         "--collect-submodules", "ebooklib",
     ]
+    # .deps 依赖目录加入 PyInstaller 模块搜索路径：PySide6 等依赖由 .deps
+    # 提供（run.py 的 sys.path.insert 只在运行时生效，Analysis 静态扫描看
+    # 不到），不加会导致 exe 启动报 ModuleNotFoundError: No module named
+    # 'PySide6'。
+    deps_dir = os.path.join(HERE, ".deps")
+    if os.path.isdir(deps_dir):
+        args += ["--paths", deps_dir]
     if onedir:
         args.append("--onedir")
     else:

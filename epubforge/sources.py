@@ -68,9 +68,6 @@ def parse_document(path: str | Path, txt_para_mode: str = "auto",
     if fmt == "pdf":
         return _parse_pdf(path, ocr=ocr, progress_cb=progress_cb)
     raise ValueError(f"未实现的解析器: {fmt}")
-    if fmt == "pdf":
-        return _parse_pdf(path)
-    raise ValueError(f"未实现的解析器: {fmt}")
 
 
 # --------------------------------------------------------------------------
@@ -356,7 +353,11 @@ def _parse_docx(path: Path) -> ParsedDocument:
     d = docx.Document(str(path))
     blocks: list[Block] = []
     title = ""
+    images: dict[str, bytes] = {}
     for p in d.paragraphs:
+        # 段落内嵌图片 → 按文档顺序生成 image 块（多图各一块，置于段落文本之前）
+        for fname in _docx_para_images(p, images):
+            blocks.append(Block(kind="image", src=fname))
         style = (p.style.name or "") if p.style else ""
         text = p.text.strip()
         m = _HEADING_STYLE_RE.match(style)
@@ -382,7 +383,7 @@ def _parse_docx(path: Path) -> ParsedDocument:
 
     doc = ParsedDocument(source_path=str(path), fmt="docx",
                          title=title or infer_title_from_filename(path), blocks=blocks)
-    _extract_docx_images(d, doc)
+    doc.images = images
     # 内容完整性自检
     src_chars = sum(len(p.text) for p in d.paragraphs)
     src_chars += sum(len(c.text) for t in d.tables for row in t.rows for c in row.cells)
@@ -391,23 +392,30 @@ def _parse_docx(path: Path) -> ParsedDocument:
     return doc
 
 
-def _extract_docx_images(d, doc: ParsedDocument):
-    """抽取内嵌图片（inline shapes）。"""
+def _docx_para_images(p, images: dict[str, bytes]) -> list[str]:
+    """抽取单个段落里的内嵌图片，登记到 images，返回按顺序的文件名列表。
+
+    通过段落 XML 里的 a:blip/@r:embed 定位关系 ID，保证图片出现在正文
+    对应位置（此前只收集 blob 不记位置，导致图片永远不出现在正文中）。
+    """
+    out: list[str] = []
     try:
-        from docx.oxml.ns import qn
-        for shape in d.inline_shapes:
-            try:
-                blip = shape._inline.graphic.graphicData.pic.blipFill.blip
-                rid = blip.get(qn("r:embed"))
-                if rid and rid in d.part.related_parts:
-                    part = d.part.related_parts[rid]
-                    ext = Path(part.partname).suffix.lstrip(".").lower() or "png"
-                    fname = f"img-{len(doc.images) + 1:03d}.{ext}"
-                    doc.images[fname] = part.blob
-            except Exception:
-                continue
+        rids = p._p.xpath(".//a:blip/@r:embed")
     except Exception:
-        pass
+        return out
+    for rid in rids:
+        try:
+            part = p.part.related_parts[rid]
+        except (KeyError, AttributeError):
+            continue
+        try:
+            ext = Path(str(part.partname)).suffix.lstrip(".").lower() or "png"
+            fname = f"img-{len(images) + 1:03d}.{ext}"
+            images[fname] = part.blob
+            out.append(fname)
+        except Exception:
+            continue
+    return out
 
 
 # --------------------------------------------------------------------------

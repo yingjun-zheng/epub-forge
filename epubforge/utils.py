@@ -75,13 +75,6 @@ def para_html(text: str) -> str:
     return "<p>" + "<br/>".join(parts) + "</p>"
 
 
-def slugify(title: str, fallback: str = "ch") -> str:
-    """把标题转成安全的文件名片段（EPUB 内部文件名用）。"""
-    s = re.sub(r"[^\w\u4e00-\u9fff]+", "-", title.strip())
-    s = re.sub(r"-+", "-", s).strip("-")
-    return (s or fallback)[:48]
-
-
 def infer_title_from_filename(path: str | Path) -> str:
     """从文件名推断书名：去掉扩展名与常见修饰。"""
     name = Path(path).stem

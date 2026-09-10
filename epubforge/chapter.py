@@ -190,17 +190,11 @@ def _split_by_size(blocks: list[Block], opts: SegmentOptions) -> list[Chapter]:
 
 
 def _post_process(chapters: list[Chapter]) -> list[Chapter]:
-    """合并空章节 / 清理。"""
+    """清理：丢弃空章节（标题无内容，含空的「前言」占位章）。"""
     out: list[Chapter] = []
     for ch in chapters:
-        if not ch.blocks and ch.title == "前言" and out:
-            # 空前言并入第一章
-            out[-1].blocks[:0] = ch.blocks
-            continue
         if not ch.blocks and out:
-            continue  # 空章节直接丢弃（标题已被上一章覆盖）
-        if out and ch.title == out[-1].title and not ch.blocks:
-            continue
+            continue  # 空章节直接丢弃
         out.append(ch)
     if not out and chapters:
         out = chapters

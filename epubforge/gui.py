@@ -513,7 +513,8 @@ class MainWindow(QMainWindow):
         if self.cover_edit.text().strip():
             cover_path = self.cover_edit.text().strip()
             if os.path.isfile(cover_path):
-                cover_bytes = open(cover_path, "rb").read()
+                with open(cover_path, "rb") as f:
+                    cover_bytes = f.read()
                 ext = os.path.splitext(cover_path)[1].lstrip(".").lower() or "jpg"
                 cover_name = f"cover.{ext}"
             else:
@@ -576,7 +577,17 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
-            self.worker.wait(5000)
+            # 后台线程仍在跑（OCR 大 PDF 可能耗时数分钟）：直接销毁运行中的
+            # QThread 会导致崩溃（"QThread: Destroyed while thread is still
+            # running"），必须先让用户确认，而不是默默 wait 超时后强关。
+            ret = QMessageBox.question(
+                self, "任务进行中",
+                "后台转换任务仍在运行，现在退出可能导致程序异常。\n确定要退出吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ret != QMessageBox.Yes:
+                event.ignore()
+                return
+            self.worker.wait(3000)
         event.accept()
 
     def dragEnterEvent(self, event: QDragEnterEvent):

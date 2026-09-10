@@ -62,14 +62,29 @@ def check_epub(path: str) -> bool:
                 ok = False
                 print(f"    !! nav 链接指向不存在的文件: {missing}")
 
-        # 章节 XML 良构
+        # 章节 XML 良构 + 图片引用存在性
+        import posixpath
         import xml.etree.ElementTree as ET
+        XHTML_NS = "{http://www.w3.org/1999/xhtml}"
+        nameset = set(names)
         for ch in [n for n in names if re.search(r"text/chap\d+\.xhtml$", n)]:
             try:
-                ET.fromstring(z.read(ch))
+                root = ET.fromstring(z.read(ch))
             except Exception as exc:
                 ok = False
                 print(f"    !! 章节 XML 非法 {ch}: {exc}")
+                continue
+            # 正文 <img src> 必须能按章节文件位置解析到包内真实文件
+            # （防止图片相对路径错位回归，如漏写 ../ 前缀）
+            imgs = list(root.iter(f"{XHTML_NS}img")) + list(root.iter("img"))
+            for img in imgs:
+                src = (img.get("src") or "").strip()
+                if not src:
+                    continue
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(ch), src))
+                if target not in nameset:
+                    ok = False
+                    print(f"    !! 图片引用失效 {ch}: {src} → {target} 不存在")
         return ok
 
 
