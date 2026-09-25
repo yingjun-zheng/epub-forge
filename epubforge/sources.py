@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .blocks import Block, ParsedDocument
 from .chapter import TEXT_HEADING_PATTERNS as _TITLE_HINT_RE
+from .chapter import VOLUME_PATTERNS as _VOLUME_HINT_RE
 from .utils import clean_text, escape_html, infer_title_from_filename, read_text_with_fallback
 
 SUPPORTED_EXT = {
@@ -154,12 +155,14 @@ def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument
     blocks = _split_long_paras(blocks)
 
     title = infer_title_from_filename(path)
-    # 首段若为短单行且非句子 → 视为书名（如「雾隐山庄」）
+    # 首段若为短单行且非句子 → 视为书名（如「雾隐山庄」）；
+    # 命中章节/卷部标题正则的行（如「第一卷 风云初起」）不是书名
     if blocks and len(blocks) >= 3:
         first = blocks[0].text.strip()
         if (len(first) <= 24 and "\n" not in first
                 and not first.endswith(_SENT_ENDINGS)
-                and not any(p.search(first) for p in _TITLE_HINT_RE)):
+                and not any(p.search(first) for p in _TITLE_HINT_RE)
+                and not any(p.search(first) for p in _VOLUME_HINT_RE)):
             title = first
             blocks.pop(0)
     doc = ParsedDocument(source_path=str(path), fmt="txt", title=title, blocks=blocks)

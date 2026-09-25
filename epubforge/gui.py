@@ -13,7 +13,7 @@ import sys
 import traceback
 
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -27,6 +27,20 @@ from .builder import BookMeta, build_epub
 from .chapter import SegmentOptions, segment
 from .sources import SUPPORTED_EXT, detect_format, parse_document
 from .utils import human_size
+
+def _app_icon() -> QIcon | None:
+    """窗口图标: 优先包内 assets/app.ico, 兼容 PyInstaller 解包目录。"""
+    candidates = []
+    base = getattr(sys, "_MEIPASS", None)  # onefile 解包临时目录
+    if base:
+        candidates.append(os.path.join(base, "assets", "app.ico"))
+    candidates.append(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "assets", "app.ico"))
+    for p in candidates:
+        if os.path.exists(p):
+            return QIcon(p)
+    return None
+
 
 LANG_CHOICES = [
     ("简体中文", "zh"), ("繁體中文", "zh-TW"), ("English", "en"),
@@ -101,6 +115,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Epub Forge v{__version__} — 多格式文档转 EPUB")
+        _icon = _app_icon()
+        if _icon is not None:
+            self.setWindowIcon(_icon)
         self.resize(1080, 760)
         self.setAcceptDrops(True)
 
@@ -451,9 +468,21 @@ class MainWindow(QMainWindow):
 
     def _refresh_chapter_list(self):
         self.chapter_list.clear()
+        bold = QFont()
+        bold.setBold(True)
+        prev_vol = None
         for i, ch in enumerate(self.chapters or [], 1):
+            # 卷/部标题行：分组显示，不可选中（无 UserRole，编辑操作自动跳过）
+            if ch.volume and ch.volume != prev_vol:
+                sep = QListWidgetItem(f"▍{ch.volume}")
+                sep.setFlags(Qt.NoItemFlags)
+                sep.setForeground(QColor("#3a7ca5"))
+                sep.setFont(bold)
+                self.chapter_list.addItem(sep)
+                prev_vol = ch.volume
+            prefix = "    " if ch.volume else ""
             item = QListWidgetItem(
-                f"{i:>3}. {ch.title or '(无标题)'}    ——  {ch.block_count} 块 · {ch.text_len:,} 字")
+                f"{prefix}{i:>3}. {ch.title or '(无标题)'}    ——  {ch.block_count} 块 · {ch.text_len:,} 字")
             item.setData(Qt.UserRole, i - 1)
             self.chapter_list.addItem(item)
 
@@ -522,7 +551,10 @@ class MainWindow(QMainWindow):
 
         self._set_busy(True, "生成中…")
         self._log(f"开始生成: {out_path}")
-        chapters_copy = [Chapter(ch.title, list(ch.blocks)) for ch in self.chapters]
+        # 复制章节时必须保留 volume 字段：丢失会导致生成的 EPUB 目录
+        # 丢掉卷/部分组（预览正常但阅读器里平铺）
+        chapters_copy = [Chapter(ch.title, list(ch.blocks), ch.volume)
+                         for ch in self.chapters]
         meta_copy = meta
 
         def task(cb):

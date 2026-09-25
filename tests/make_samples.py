@@ -124,9 +124,38 @@ def make_plain_pdf():
     print("生成:", out)
 
 
+def make_volume_novel():
+    """含卷/部两级结构的小说样例：测试卷识别与嵌套目录。"""
+    lines: list[str] = []
+    title = "山河纪事"
+    lines.append(title)
+    lines.append("")
+    volumes = [
+        ("第一部 北境风云", ["第一章 出关", "第二章 雪夜"]), 
+        ("第二部 南下千里", ["第三章 渡江", "第四章 火攻", "第五章 班师"]),
+        ("第三部 天下大势", ["第六章 定策", "尾声"]),
+    ]
+    for vol, chs in volumes:
+        lines.append(vol)
+        lines.append("")
+        lines.append(f"{vol}始于乱世，群雄并起，且看少年如何步步登高。")
+        lines.append("")
+        for ch in chs:
+            lines.append(ch)
+            lines.append("")
+            for j in range(4):
+                lines.append(f"{ch}第{j + 1}段。风起于青萍之末，浪成于微澜之间，故事在这片土地上徐徐展开。")
+            lines.append("")
+    out = os.path.join(SAMPLES, "volume_novel.txt")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("生成:", out)
+
+
 if __name__ == "__main__":
     make_png()
     make_docx()
     make_pdf()
     make_plain_pdf()
+    make_volume_novel()
     print("样例生成完毕。")

@@ -25,16 +25,19 @@ def main():
         sys.exit(1)
 
     onedir = "--onedir" in sys.argv
+    icon = os.path.join(HERE, "assets", "app.ico")
     args = [
         os.path.join(HERE, "run.py"),
         "--name", "EpubForge",
         "--noconfirm",
         "--clean",
         "--windowed",                 # 不弹出控制台窗口
-        "--icon", os.path.join(HERE, "assets", "app.ico") if os.path.exists(
-            os.path.join(HERE, "assets", "app.ico")) else "NONE",
+        "--icon", icon if os.path.exists(icon) else "NONE",
         "--collect-submodules", "ebooklib",
     ]
+    # 图标打进包内, GUI 运行时通过 sys._MEIPASS/assets/app.ico 设窗口图标
+    if os.path.exists(icon):
+        args += ["--add-data", f"{icon};assets"]
     # .deps 依赖目录加入 PyInstaller 模块搜索路径：PySide6 等依赖由 .deps
     # 提供（run.py 的 sys.path.insert 只在运行时生效，Analysis 静态扫描看
     # 不到），不加会导致 exe 启动报 ModuleNotFoundError: No module named

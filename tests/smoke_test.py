@@ -88,6 +88,36 @@ def check_epub(path: str) -> bool:
         return ok
 
 
+def check_volume_toc(path: str) -> bool:
+    """校验卷/部样例的嵌套目录：nav 二级列表、NCX 嵌套 navPoint、卷名可跳转。"""
+    ok = True
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        nav_name = [n for n in names if n.endswith("nav.xhtml")]
+        ncx_name = [n for n in names if n.endswith(".ncx")]
+        if not nav_name or not ncx_name:
+            print("    !! 缺少 nav/ncx")
+            return False
+        nav = z.read(nav_name[0]).decode("utf-8")
+        ncx = z.read(ncx_name[0]).decode("utf-8")
+        if nav.count("<ol") < 2:
+            ok = False
+            print("    !! nav 未出现嵌套列表（卷分组缺失）")
+        if "第一部" not in nav or "第二部" not in nav:
+            ok = False
+            print("    !! nav 中未找到卷/部标题")
+        # NCX：解析 XML，确认存在嵌套 navPoint（卷 navPoint 下挂章 navPoint）
+        import xml.etree.ElementTree as ET
+        ncx_ns = "{http://www.daisy.org/z3986/2005/ncx/}"
+        root = ET.fromstring(z.read(ncx_name[0]))
+        nested = any(len(p.findall(f"{ncx_ns}navPoint")) > 0
+                     for p in root.iter(f"{ncx_ns}navPoint"))
+        if not nested:
+            ok = False
+            print("    !! NCX 未出现嵌套 navPoint（卷分组缺失）")
+    return ok
+
+
 def run():
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -127,10 +157,18 @@ def run():
             out = os.path.join(OUT, f"{os.path.splitext(name)[0]}.epub")
             meta = BookMeta(title=doc.title or name, author="冒烟测试", lang="zh")
             build_epub(chapters, meta, out, images=doc.images)
-            if check_epub(out):
-                print(f"  ✓ {out} ({os.path.getsize(out):,} B)")
-            else:
+            if not check_epub(out):
                 failed += 1
+                continue
+            print(f"  ✓ {out} ({os.path.getsize(out):,} B)")
+            vols = sorted({c.volume for c in chapters if c.volume})
+            if vols:
+                print(f"  卷/部分组: {len(vols)} 个 —— {' | '.join(vols)}")
+            if name == "volume_novel.txt":
+                if check_volume_toc(out):
+                    print("  ✓ 卷嵌套目录校验通过")
+                else:
+                    failed += 1
         except Exception as exc:
             import traceback
             failed += 1

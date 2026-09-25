@@ -18,15 +18,21 @@ import statistics
 
 from .blocks import Block, Chapter, ParsedDocument
 
-# 常见中文/英文章节标题正则（用于纯文本探测）
+# 常见中文/英文章节标题正则（用于纯文本探测，章级）
 TEXT_HEADING_PATTERNS = [
-    re.compile(r"^第[0-9０-９一二三四五六七八九十百千万零两]{1,9}[章节回卷部篇集]"),
-    re.compile(r"^卷[一二三四五六七八九十百千万零两]{1,4}"),
+    re.compile(r"^第[0-9０-９一二三四五六七八九十百千万零两]{1,9}[章节回篇集]"),
     re.compile(r"^[【\[]?(?:序章|序言|前言|楔子|引子|尾声|终章|后记|番外|绪论|引言|导论|目录|结语)[】\]]?"),
-    re.compile(r"^(?:Chapter|CHAPTER|Chap\.?|Part|PART)\s+[0-9IVXLCDMivxlcdm]+"),
+    re.compile(r"^(?:Chapter|CHAPTER|Chap\.?)\s+[0-9IVXLCDMivxlcdm]+"),
     re.compile(r"^[一二三四五六七八九十]{1,4}[、．.]\s*\S"),
     re.compile(r"^[0-9]{1,4}[\.、．]\s*\S"),
     re.compile(r"^[A-Z][A-Z0-9\s&'\-—·]{3,}$"),  # 全大写短行
+]
+
+# 卷/部级标题正则（第一卷 / 卷二 / 第三部 / Volume 1 / Part 2 等）
+VOLUME_PATTERNS = [
+    re.compile(r"^第[0-9０-９一二三四五六七八九十百千万零两]{1,9}[卷部]"),
+    re.compile(r"^卷[一二三四五六七八九十百千万零两]{1,4}"),
+    re.compile(r"^(?:volume|vol\.?|book|part)\s+[0-9IVXLCDMivxlcdm]+", re.IGNORECASE),
 ]
 
 # 排除句子结尾标点的"标题嫌疑"检测
@@ -118,10 +124,31 @@ def segment(doc: ParsedDocument, opts: SegmentOptions | None = None) -> tuple[li
             chapters = _split_by_size(blocks, opts)
             return _post_process(chapters), notes
 
-    if not starts:
+    # 卷/部探测（第一卷/第三部/卷二 等，章正则已排除卷部字符，互不干扰）
+    volume_starts: list[int] = []
+    if opts.mode in ("auto", "heading"):
+        volume_starts = _detect_text_headings(blocks, VOLUME_PATTERNS)
+
+    if not starts and not volume_starts:
         notes.append("未识别到章节标题，按篇幅切分。")
         chapters = _split_by_size(blocks, opts)
         return _post_process(chapters), notes
+
+    if len(volume_starts) >= 2:
+        # 两级结构：卷/部作分组，章挂到所属卷，目录按卷嵌套
+        notes.append(f"识别到 {len(volume_starts)} 个卷/部标题、{len(starts)} 个章节标题，按两级结构切分。")
+        chapters = _cut_at_two_level(blocks, starts, volume_starts, doc.title)
+        return _post_process(chapters), notes
+
+    if not starts and volume_starts:
+        # 仅卷无章（或只有单个卷标题）：卷起点充当章起点，单级切分
+        notes.append(f"未识别到更低层级章标题，按 {len(volume_starts)} 个卷/部标题切分。")
+        chapters = _cut_at(blocks, volume_starts, doc.title)
+        return _post_process(chapters), notes
+
+    if volume_starts:
+        # 单个卷标题 + 章标题：并入章起点一起切（兼容旧的平铺行为）
+        starts = sorted(set(starts) | set(volume_starts))
 
     chapters = _cut_at(blocks, starts, doc.title)
     return _post_process(chapters), notes
@@ -144,8 +171,40 @@ def _cut_at(blocks: list[Block], starts: list[int], doc_title: str) -> list[Chap
     return chapters
 
 
-def _detect_text_headings(blocks: list[Block]) -> list[int]:
-    """在纯文本段落里用正则探测标题行。返回命中块的索引（升序）。"""
+def _cut_at_two_level(blocks: list[Block], ch_starts: list[int], vol_starts: list[int],
+                      doc_title: str) -> list[Chapter]:
+    """两级切分：卷/部标题作分组（Chapter.volume），章标题切章。
+
+    * 卷标题块之后、下一章起点之前的正文 → 卷首章（标题用卷名，volume 同名）；
+    * 章起点处的章挂到当前卷；卷名之前出现的章 volume 为空（如开篇的序章）。
+    """
+    vol_titles = {i: blocks[i].text.strip() for i in vol_starts}
+    marks = sorted([(i, "vol" if i in vol_titles else "ch")
+                    for i in set(ch_starts) | set(vol_starts)])
+    chapters: list[Chapter] = []
+    if marks[0][0] > 0:
+        chapters.append(Chapter(doc_title or "前言", list(blocks[: marks[0][0]])))
+    cur_volume = ""
+    for k, (idx, kind) in enumerate(marks):
+        end = marks[k + 1][0] if k + 1 < len(marks) else len(blocks)
+        body = list(blocks[idx + 1: end])
+        if kind == "vol":
+            cur_volume = vol_titles[idx] or f"第{k + 1}卷"
+            if body:
+                # 卷名与首章之间的内容 → 卷首章（常见于卷引言/卷首语）
+                chapters.append(Chapter(cur_volume, body, volume=cur_volume))
+        else:
+            title = blocks[idx].text.strip() or f"第{k + 1}章"
+            chapters.append(Chapter(title, body, volume=cur_volume))
+    return chapters
+
+
+def _detect_text_headings(blocks: list[Block], patterns: list[re.Pattern] | None = None) -> list[int]:
+    """在纯文本段落里用正则探测标题行。返回命中块的索引（升序）。
+
+    patterns 缺省用章级标题正则；探测卷/部级标题时传 VOLUME_PATTERNS。
+    """
+    patterns = patterns if patterns is not None else TEXT_HEADING_PATTERNS
     hits: list[int] = []
     for i, b in enumerate(blocks):
         if b.kind not in ("para", "heading"):
@@ -157,7 +216,7 @@ def _detect_text_headings(blocks: list[Block]) -> list[int]:
             continue
         if line.endswith(_SENT_END):
             continue
-        if any(p.search(line) for p in TEXT_HEADING_PATTERNS):
+        if any(p.search(line) for p in patterns):
             hits.append(i)
     # 去重：连续命中且文本相同只保留第一个
     dedup: list[int] = []

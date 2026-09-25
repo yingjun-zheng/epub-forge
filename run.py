@@ -71,6 +71,10 @@ def _cli_main(argv):
     chapters, notes = segment(doc, opts)
     for n in notes:
         print("    -", n)
+    volumes = list(dict.fromkeys(c.volume for c in chapters if c.volume))
+    if volumes:
+        head = " / ".join(volumes[:5]) + ("…" if len(volumes) > 5 else "")
+        print(f"    识别到 {len(volumes)} 个卷/部（目录将按卷分组）：{head}")
     for w in doc.warnings:
         print("    !", w)
     if not chapters:

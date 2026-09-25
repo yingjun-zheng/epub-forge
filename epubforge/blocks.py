@@ -24,10 +24,15 @@ class Block:
 
 @dataclass
 class Chapter:
-    """一个 EPUB 章节：标题 + 内容块列表。"""
+    """一个 EPUB 章节：标题 + 内容块列表。
+
+    volume: 所属卷/部标题（如「第一卷 风云初起」），无卷结构时为空串。
+            仅用于生成两级目录，不影响章节内容。
+    """
 
     title: str
     blocks: list[Block] = field(default_factory=list)
+    volume: str = ""
 
     @property
     def text_len(self) -> int:

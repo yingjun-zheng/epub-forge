@@ -181,7 +181,7 @@ def build_epub(chapters: list[Chapter], meta: BookMeta, output_path: str | Path,
         img_map[fname] = f"../{epub_fname}"
 
     # 章节
-    toc: list = []
+    items: list = []
     total = max(len(chapters), 1)
     for i, ch in enumerate(chapters, 1):
         prog(5 + 80 * i / total, f"生成章节 {i}/{len(chapters)}: {ch.title[:30]}")
@@ -190,8 +190,26 @@ def build_epub(chapters: list[Chapter], meta: BookMeta, output_path: str | Path,
         item.content = render_chapter(ch, img_map)
         item.add_link(href="../style/main.css", rel="stylesheet", type="text/css")
         book.add_item(item)
-        toc.append(item)
+        items.append(item)
         spine.append(item)
+
+    # 目录：有卷/部结构时按卷嵌套（EPUB3 nav 二级列表 + NCX 嵌套 navPoint），
+    # 无卷结构的章节平铺。Section.href 必须指向该卷第一章文件 —— ebooklib
+    # 的 NCX 写入器要求 navPoint content src 非空（空 href 会生成非法结构）。
+    toc: list = []
+    i, n = 0, len(chapters)
+    while i < n:
+        vol = chapters[i].volume
+        if not vol:
+            toc.append(items[i])
+            i += 1
+            continue
+        group = []
+        while i < n and chapters[i].volume == vol:
+            group.append(items[i])
+            i += 1
+        toc.append((epub.Section(vol, href=group[0].file_name), group))
+    book.toc = toc
 
     # 导航（nav 在封面之后、正文之前）
     nav = epub.EpubNav()
@@ -201,7 +219,6 @@ def build_epub(chapters: list[Chapter], meta: BookMeta, output_path: str | Path,
     else:
         spine.insert(0, nav)
 
-    book.toc = toc
     book.add_item(epub.EpubNcx())
     book.spine = spine
 
