@@ -42,6 +42,11 @@ td, th { border: 1px solid #999; padding: 0.3em 0.6em; font-size: 0.9em; }
 ul, ol { margin: 0.6em 0 0.9em 1.5em; }
 li { margin: 0.25em 0; text-indent: 0; }
 .copyright { text-align: center; color: #888; font-size: 0.85em; margin-top: 2em; }
+.part-page { text-align: center; margin: 28% 2em 0; }
+h1.part-title { font-size: 1.7em; letter-spacing: 0.18em; margin: 0 0 0.9em;
+                text-align: center; text-indent: 0; font-weight: bold; }
+hr.part-rule { width: 42%; margin: 0 auto 2.4em; border: none; border-top: 2px solid #8a8a8a; }
+.part-page p.para { text-align: left; text-indent: 2em; }
 """
 
 
@@ -92,6 +97,39 @@ def render_chapter(ch: Chapter, img_map: dict[str, str]) -> str:
     # 跳过与章名重复的起始标题（源文档的 h1 可能既是章名又是正文首块）
     if blocks and blocks[0].kind == "heading" and blocks[0].text.strip() == ch.title.strip():
         blocks = blocks[1:]
+    body.extend(_blocks_html(blocks, img_map))
+    # 注意: 不要输出 <?xml ... encoding=...?> 声明 —— lxml 的 html 解析器
+    # 不接受带编码声明的 Unicode 字符串，会导致 ebooklib 解析 body 为空。
+    # CSS 链接由 ebooklib 的 item.add_link() 注入（写在这里会被重建时丢弃）。
+    return (
+        '<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n'
+        '<head><title>{title}</title></head>\n'
+        '<body>\n{body}\n</body></html>'
+    ).format(title=escape_html(ch.title), body="\n".join(body))
+
+
+def render_part_page(title: str, intro_blocks: list[Block],
+                     img_map: dict[str, str]) -> str:
+    """卷/部扉页: 大字卷名居中 + 装饰线 + 可选引言（卷首章内容并入）。"""
+    body = [
+        '<section class="part-page">',
+        f'<h1 class="part-title">{escape_html(title)}</h1>',
+        '<hr class="part-rule"/>',
+    ]
+    body.extend(_blocks_html(list(intro_blocks), img_map))
+    body.append("</section>")
+    return (
+        '<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n'
+        '<head><title>{title}</title></head>\n'
+        '<body>\n{body}\n</body></html>'
+    ).format(title=escape_html(title), body="\n".join(body))
+
+
+def _blocks_html(blocks: list[Block], img_map: dict[str, str]) -> list[str]:
+    """内容块 → XHTML 片段列表（章节正文与卷扉页共用）。"""
+    body: list[str] = []
     for b in blocks:
         if b.kind == "heading":
             lvl = min(max(b.level or 2, 1), 6)
@@ -110,21 +148,13 @@ def render_chapter(ch: Chapter, img_map: dict[str, str]) -> str:
             src = img_map.get(b.src, b.src)
             cap = f"<figcaption>{escape_html(b.alt)}</figcaption>" if b.alt else ""
             body.append(f'<figure><img src="{escape_html(src)}" alt="{escape_html(b.alt)}"/>{cap}</figure>')
-    # 注意: 不要输出 <?xml ... encoding=...?> 声明 —— lxml 的 html 解析器
-    # 不接受带编码声明的 Unicode 字符串，会导致 ebooklib 解析 body 为空。
-    # CSS 链接由 ebooklib 的 item.add_link() 注入（写在这里会被重建时丢弃）。
-    return (
-        '<!DOCTYPE html>\n'
-        '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">\n'
-        '<head><title>{title}</title></head>\n'
-        '<body>\n{body}\n</body></html>'
-    ).format(title=escape_html(ch.title), body="\n".join(body))
+    return body
 
 
 def build_epub(chapters: list[Chapter], meta: BookMeta, output_path: str | Path,
                images: dict[str, bytes] | None = None,
                cover_bytes: bytes | None = None, cover_name: str = "cover.jpg",
-               progress_cb=None) -> str:
+               progress_cb=None, part_pages: bool = True) -> str:
     """生成 EPUB3 文件，返回输出路径。progress_cb(percent: float, msg: str)。
 
     注意（ebooklib 0.20 行为）:
@@ -180,35 +210,68 @@ def build_epub(chapters: list[Chapter], meta: BookMeta, output_path: str | Path,
                                      media_type=_media_type(safe), content=data))
         img_map[fname] = f"../{epub_fname}"
 
-    # 章节
-    items: list = []
-    total = max(len(chapters), 1)
-    for i, ch in enumerate(chapters, 1):
-        prog(5 + 80 * i / total, f"生成章节 {i}/{len(chapters)}: {ch.title[:30]}")
-        fname = f"text/chap{i:04d}.xhtml"
-        item = epub.EpubHtml(title=ch.title, file_name=fname, lang=meta.lang or "zh")
+    # 章节 + 目录：按卷/部分组生成。启用卷扉页时每组前插入扉页页
+    # （大字卷名居中，卷首章内容并入扉页），目录 Section 指向扉页；
+    # 关闭时保持旧行为（卷名仅目录分组，Section 指向该卷第一章）。
+    def _make_item(ch: Chapter, idx: int) -> "epub.EpubHtml":
+        item = epub.EpubHtml(title=ch.title, file_name=f"text/chap{idx:04d}.xhtml",
+                             lang=meta.lang or "zh")
         item.content = render_chapter(ch, img_map)
         item.add_link(href="../style/main.css", rel="stylesheet", type="text/css")
         book.add_item(item)
-        items.append(item)
-        spine.append(item)
+        return item
 
-    # 目录：有卷/部结构时按卷嵌套（EPUB3 nav 二级列表 + NCX 嵌套 navPoint），
-    # 无卷结构的章节平铺。Section.href 必须指向该卷第一章文件 —— ebooklib
-    # 的 NCX 写入器要求 navPoint content src 非空（空 href 会生成非法结构）。
     toc: list = []
+    part_no = 0
+    ch_no = 0
     i, n = 0, len(chapters)
+    total = max(n, 1)
     while i < n:
         vol = chapters[i].volume
         if not vol:
-            toc.append(items[i])
+            ch_no += 1
+            prog(5 + 80 * ch_no / total, f"生成章节 {ch_no}/{n}: {chapters[i].title[:30]}")
+            item = _make_item(chapters[i], ch_no)
+            spine.append(item)
+            toc.append(item)
             i += 1
             continue
-        group = []
-        while i < n and chapters[i].volume == vol:
-            group.append(items[i])
-            i += 1
-        toc.append((epub.Section(vol, href=group[0].file_name), group))
+        # 收集整个卷组
+        j = i
+        group: list[Chapter] = []
+        while j < n and chapters[j].volume == vol:
+            group.append(chapters[j])
+            j += 1
+        # 卷首章: 组内第一个章 title 与卷名相同（chapter.py 生成的卷引言章），
+        # 其内容并入扉页，不再单独成章 —— 否则目录里卷名出现两次
+        intro_ch: Chapter | None = None
+        body_chs = group
+        if len(group) > 1 and group[0].title.strip() == vol.strip():
+            intro_ch, body_chs = group[0], group[1:]
+        children = []
+        section_href = None
+        if part_pages:
+            part_no += 1
+            part_fname = f"text/part{part_no:04d}.xhtml"
+            prog(5 + 80 * ch_no / total, f"生成卷扉页: {vol[:30]}")
+            pitem = epub.EpubHtml(title=vol, file_name=part_fname, lang=meta.lang or "zh")
+            pitem.content = render_part_page(
+                vol, intro_ch.blocks if intro_ch else [], img_map)
+            pitem.add_link(href="../style/main.css", rel="stylesheet", type="text/css")
+            book.add_item(pitem)
+            spine.append(pitem)
+            section_href = part_fname
+        for ch in body_chs:
+            ch_no += 1
+            prog(5 + 80 * ch_no / total, f"生成章节 {ch_no}/{n}: {ch.title[:30]}")
+            item = _make_item(ch, ch_no)
+            spine.append(item)
+            children.append(item)
+        # Section.href 必须非空 —— ebooklib 的 NCX 写入器要求 navPoint
+        # content src 非空（空 href 会生成非法结构）
+        toc.append((epub.Section(vol, href=section_href or children[0].file_name),
+                    children))
+        i = j
     book.toc = toc
 
     # 导航（nav 在封面之后、正文之前）

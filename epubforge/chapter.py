@@ -38,6 +38,21 @@ VOLUME_PATTERNS = [
 # 排除句子结尾标点的"标题嫌疑"检测
 _SENT_END = ("。", "！", "？", "；", "，", ".", "!", "?", ";", ",", "：", ":")
 
+# 强标题前缀: 行以「第X章/卷/部」「番外」等开头时, 标题置信度高。
+# 「章/卷」后必须跟分隔符(空白/标点/行尾), 防「第一章讲的是往事。」
+# 这类以"第X章"开头的正文句子误判; 番外/楔子等条目同样要求后跟
+# 数字/标题性后缀(篇集传录志记之上中下)或分隔符 —— 否则「番外正文。」
+# 会被当标题, 标题块不进章节内容导致正文丢失。
+_SPECIAL_TITLE_WORDS = r"序章|序言|前言|楔子|引子|尾声|终章|后记|番外|绪论|引言|导论|目录|结语"
+_STRONG_TITLE_PREFIX = re.compile(
+    r"^(?:第[0-9０-９一二三四五六七八九十百千万零两]{1,9}[章节回篇集卷部]"
+    r"(?=$|\s|[：:·、，,.。;；!！?？—\-（）()【】\[\]「」『』《》\"'])"
+    rf"|[【\[]?(?:{_SPECIAL_TITLE_WORDS})(?=$|\s|[0-9０-９一二三四五六七八九十百]"
+    r"|篇|集|传|录|志|记|之|上|中|下|[：:·、，,.。;；!！?？—\-（）()【】\[\]「」『』《》\"'])"
+    r"|卷[一二三四五六七八九十百千万零两]{1,4}"
+    r"|(?:Chapter|CHAPTER|Chap\.?)\s+[0-9IVXLCDMivxlcdm]+)"
+)
+
 MAX_TITLE_LEN = 48
 
 
@@ -215,7 +230,15 @@ def _detect_text_headings(blocks: list[Block], patterns: list[re.Pattern] | None
         if len(line) > MAX_TITLE_LEN:
             continue
         if line.endswith(_SENT_END):
-            continue
+            # 网文标题行尾带句号很常见（「第一章 往事回忆。」）——
+            # 强前缀标题且行尾是句号时放行（逗号/问号等结尾仍视为正文）。
+            # 放行需同时满足: 短行(≤24字)且行内无逗号 —— 否则「卷标题+卷引言」
+            # 粘连的长句（「第一部 xxx 始于乱世，群雄并起，…。」）会误判为标题。
+            if not (line.endswith(("。", "."))
+                    and len(line) <= 24
+                    and "，" not in line and "," not in line
+                    and _STRONG_TITLE_PREFIX.match(line)):
+                continue
         if any(p.search(line) for p in patterns):
             hits.append(i)
     # 去重：连续命中且文本相同只保留第一个

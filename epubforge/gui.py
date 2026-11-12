@@ -102,9 +102,10 @@ def _analyze_task(path: str, opts: SegmentOptions, txt_mode: str, ocr_enabled: b
 
 
 def _build_task(doc: ParsedDocument, chapters: list[Chapter], meta: BookMeta,
-                out_path: str, cover_bytes, cover_name, cb):
+                out_path: str, cover_bytes, cover_name, part_pages: bool, cb):
     return build_epub(chapters, meta, out_path, images=doc.images,
-                      cover_bytes=cover_bytes, cover_name=cover_name, progress_cb=cb)
+                      cover_bytes=cover_bytes, cover_name=cover_name,
+                      progress_cb=cb, part_pages=part_pages)
 
 
 # --------------------------------------------------------------------------
@@ -311,6 +312,9 @@ class MainWindow(QMainWindow):
         form.addRow("出版社:", self.publisher_edit)
         form.addRow("语言:", self.lang_combo)
         form.addRow("简介:", self.desc_edit)
+        self.part_pages_check = QCheckBox("卷/部生成扉页（大字卷名分隔页，推荐）")
+        self.part_pages_check.setChecked(True)
+        form.addRow("", self.part_pages_check)
         return g
 
     def _build_action_row(self) -> QHBoxLayout:
@@ -559,7 +563,8 @@ class MainWindow(QMainWindow):
 
         def task(cb):
             return _build_task(self.doc, chapters_copy, meta_copy, out_path,
-                               cover_bytes, cover_name, cb)
+                               cover_bytes, cover_name,
+                               self.part_pages_check.isChecked(), cb)
 
         self._start_worker(task, self._on_built, extra={"out": out_path})
 

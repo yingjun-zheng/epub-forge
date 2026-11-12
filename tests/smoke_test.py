@@ -13,8 +13,11 @@ DEPS = os.path.join(ROOT, ".deps")
 if os.path.isdir(DEPS):
     sys.path.insert(0, DEPS)
 
+from epubforge.blocks import Block  # noqa: E402
 from epubforge.builder import BookMeta, build_epub  # noqa: E402
-from epubforge.chapter import SegmentOptions, segment  # noqa: E402
+from epubforge.chapter import (  # noqa: E402
+    SegmentOptions, VOLUME_PATTERNS, _detect_text_headings, segment,
+)
 from epubforge.sources import parse_document  # noqa: E402
 
 SAMPLES = os.path.join(ROOT, "samples")
@@ -89,7 +92,8 @@ def check_epub(path: str) -> bool:
 
 
 def check_volume_toc(path: str) -> bool:
-    """校验卷/部样例的嵌套目录：nav 二级列表、NCX 嵌套 navPoint、卷名可跳转。"""
+    """校验卷/部样例的嵌套目录：nav 二级列表、NCX 嵌套 navPoint、卷扉页存在且
+    卷引言并入扉页、目录卷节点指向扉页。"""
     ok = True
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
@@ -99,13 +103,37 @@ def check_volume_toc(path: str) -> bool:
             print("    !! 缺少 nav/ncx")
             return False
         nav = z.read(nav_name[0]).decode("utf-8")
-        ncx = z.read(ncx_name[0]).decode("utf-8")
         if nav.count("<ol") < 2:
             ok = False
             print("    !! nav 未出现嵌套列表（卷分组缺失）")
         if "第一部" not in nav or "第二部" not in nav:
             ok = False
             print("    !! nav 中未找到卷/部标题")
+        # 卷扉页: partXXXX.xhtml 存在、含大字卷名与装饰线、卷引言并入
+        part_names = sorted(n for n in names if "/part" in n and n.endswith(".xhtml"))
+        if len(part_names) < 2:
+            ok = False
+            print(f"    !! 卷扉页数量不足（样例有 3 部，应 ≥2），实际: {part_names}")
+        else:
+            p1 = z.read(part_names[0]).decode("utf-8")
+            if 'class="part-title"' not in p1 or 'class="part-rule"' not in p1:
+                ok = False
+                print("    !! 扉页缺少 part-title/part-rule 结构")
+            if "北境风云始于乱世" not in p1:
+                ok = False
+                print("    !! 卷引言未并入扉页（卷首章应合并进扉页而非独立成章）")
+            # 卷首章不应再单独存在（避免目录里卷名出现两次）
+            chaps = [n for n in names
+                     if n.startswith("text/chap") and n.endswith(".xhtml")]
+            for cn in chaps:
+                body = z.read(cn).decode("utf-8")
+                if ">第一部 北境风云<" in body:
+                    ok = False
+                    print(f"    !! 卷首章仍独立成章: {cn}")
+            # 目录卷节点指向扉页
+            if part_names[0].split("/")[-1] not in nav:
+                ok = False
+                print("    !! nav 卷节点未指向扉页文件")
         # NCX：解析 XML，确认存在嵌套 navPoint（卷 navPoint 下挂章 navPoint）
         import xml.etree.ElementTree as ET
         ncx_ns = "{http://www.daisy.org/z3986/2005/ncx/}"
@@ -195,6 +223,36 @@ def run():
         except Exception as exc:
             failed += 1
             print(f"!! 附加模式测试失败: {exc}")
+
+    # ---- 附加：行尾句号标题识别（网文标题排版「第一章 xxx。」） ----
+    heading_cases = [
+        ("第一章  杨冰、往事回忆。", True, False),   # 尾句号+顿号+双空格
+        ("第二章 舞厅", True, False),
+        ("番外1", True, False),
+        ("第一部 风起。", False, True),
+        ("第二部 舞厅风云", False, True),
+        ("第一章讲的是往事。", False, False),        # "章"后跟动词 → 正文
+        ("他翻开了第一章。", False, False),          # "第"不在行首 → 正文
+        ("番外正文。", False, False),                # "番外"后跟正文性汉字 → 正文(防丢内容)
+        ("番外篇。", True, False),                   # "番外篇"是标题性写法 → 标题
+        ("番外1", True, False),                      # 已有: 数字后缀
+        ("楔子。", True, False),
+        ("这是正文第一段，讲到第一章的内容。", False, False),
+    ]
+    try:
+        ch_blocks = [Block(kind="para", text=t) for t, _, _ in heading_cases]
+        ch_hits = set(_detect_text_headings(ch_blocks))
+        vol_hits = set(_detect_text_headings(ch_blocks, VOLUME_PATTERNS))
+        for i, (t, want_ch, want_vol) in enumerate(heading_cases):
+            if (i in ch_hits) != want_ch or (i in vol_hits) != want_vol:
+                failed += 1
+                print(f"!! 标题识别用例失败: {t!r} 章级={i in ch_hits}(期望{want_ch})"
+                      f" 卷级={i in vol_hits}(期望{want_vol})")
+        if failed == 0:
+            print(f"\n[标题句号回归] {len(heading_cases)} 个用例全部通过")
+    except Exception as exc:
+        failed += 1
+        print(f"!! 标题识别用例异常: {exc}")
 
     print(f"\n{'全部通过' if failed == 0 else f'{failed} 个失败'}")
     return 1 if failed else 0

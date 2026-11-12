@@ -58,6 +58,8 @@ def _cli_main(argv):
                    help="扫描版 PDF 启用 OCR 识别（无文字层时，速度较慢）")
     p.add_argument("--no-split", action="store_true",
                    help="不分章：整本作为一章")
+    p.add_argument("--no-part-pages", action="store_true",
+                   help="不生成卷/部扉页（默认生成大字卷名分隔页）")
     args = p.parse_args(argv)
 
     print(f"[1/3] 解析 {args.input} …")
@@ -106,7 +108,8 @@ def _cli_main(argv):
             last["v"] = pct
 
     build_epub(chapters, meta, out_path, images=doc.images,
-               cover_bytes=cover_bytes, cover_name=cover_name, progress_cb=cb)
+               cover_bytes=cover_bytes, cover_name=cover_name, progress_cb=cb,
+               part_pages=not args.no_part_pages)
     logutil.log(f"CLI 转换完成: {out_path}（{human_size(os.path.getsize(out_path))}，{len(chapters)} 章）")
     print(f"完成: {out_path}（{human_size(os.path.getsize(out_path))}）")
     return 0
