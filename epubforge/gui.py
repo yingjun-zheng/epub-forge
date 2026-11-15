@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         _icon = _app_icon()
         if _icon is not None:
             self.setWindowIcon(_icon)
-        self.resize(1080, 760)
+        self.resize(1180, 800)
         self.setAcceptDrops(True)
 
         self.doc: ParsedDocument | None = None
@@ -223,6 +223,7 @@ class MainWindow(QMainWindow):
 
         lv.addWidget(QLabel("章节预览:"))
         self.chapter_list = QListWidget()
+        self.chapter_list.currentItemChanged.connect(self._show_chapter_preview)
         self.chapter_list.itemDoubleClicked.connect(self._rename_chapter)
         self.chapter_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.chapter_list.customContextMenuRequested.connect(self._chapter_menu)
@@ -265,10 +266,17 @@ class MainWindow(QMainWindow):
         rv.addWidget(self.chapter_stats)
 
         # 操作按钮组：分析章节 → 重命名/合并 → 生成（绿色）
-        analyze_btn = QPushButton("分析章节")
-        analyze_btn.setMinimumHeight(34)
-        analyze_btn.clicked.connect(self._analyze)
-        rv.addWidget(analyze_btn)
+        self.analyze_btn = QPushButton("重新分析章节")
+        self.analyze_btn.setMinimumHeight(34)
+        self.analyze_btn.setEnabled(False)
+        self.analyze_btn.clicked.connect(self._analyze)
+        rv.addWidget(self.analyze_btn)
+
+        rv.addWidget(QLabel("章节内容预览"))
+        self.chapter_preview = QTextEdit()
+        self.chapter_preview.setReadOnly(True)
+        self.chapter_preview.setPlaceholderText("选择左侧章节查看内容")
+        rv.addWidget(self.chapter_preview, stretch=1)
 
         btn_row = QHBoxLayout()
         rename_btn = QPushButton("重命名")
@@ -284,7 +292,6 @@ class MainWindow(QMainWindow):
         self.gen_btn.setMinimumHeight(40)
         self.gen_btn.clicked.connect(self._build)
         rv.addWidget(self.gen_btn)
-        rv.addStretch(1)
 
         splitter.addWidget(left)
         splitter.addWidget(right)
@@ -392,6 +399,7 @@ class MainWindow(QMainWindow):
         self.desc_edit.clear()
         self.cover_edit.clear()
         self.chapter_list.clear()
+        self.chapter_preview.clear()
         self.chapter_stats.setText("尚未分析")
         self.out_preview.setText("输出文件：—")
         self.progress.setValue(0)
@@ -400,6 +408,7 @@ class MainWindow(QMainWindow):
             self.source_path = ""
             self.src_edit.clear()
             self.fmt_label.setText("—")
+            self.analyze_btn.setEnabled(False)
 
     def _set_source(self, path: str):
         # 选择了新文件：先清掉上一次填写的元数据/封面/章节，避免串数据
@@ -411,8 +420,10 @@ class MainWindow(QMainWindow):
         self.fmt_label.setText(f"格式: {fmt.upper() if fmt else '不支持'}")
         if not fmt:
             self._set_gen_enabled(False)
+            self.analyze_btn.setEnabled(False)
             self._log(f"不支持的文件格式: {path}")
             return
+        self.analyze_btn.setEnabled(True)
         if not self.out_edit.text():
             self.out_edit.setText(os.path.dirname(os.path.abspath(path)))
         self._update_out_preview()
@@ -439,11 +450,13 @@ class MainWindow(QMainWindow):
             return
         self._set_busy(True, "分析中…")
         self._log(f"开始分析: {os.path.basename(self.source_path)}")
+        source_path = self.source_path
+        opts = self._opts()
+        txt_mode = self.txt_mode_combo.currentData()
+        ocr_enabled = self.ocr_check.isChecked()
 
         def task(cb):
-            return _analyze_task(self.source_path, self._opts(),
-                                 self.txt_mode_combo.currentData(),
-                                 self.ocr_check.isChecked(), cb)
+            return _analyze_task(source_path, opts, txt_mode, ocr_enabled, cb)
 
         self._start_worker(task, self._on_analyzed)
 
@@ -471,6 +484,7 @@ class MainWindow(QMainWindow):
     # ---------------- 章节编辑 ----------------
 
     def _refresh_chapter_list(self):
+        selected = self._selected_index()
         self.chapter_list.clear()
         bold = QFont()
         bold.setBold(True)
@@ -489,6 +503,22 @@ class MainWindow(QMainWindow):
                 f"{prefix}{i:>3}. {ch.title or '(无标题)'}    ——  {ch.block_count} 块 · {ch.text_len:,} 字")
             item.setData(Qt.UserRole, i - 1)
             self.chapter_list.addItem(item)
+        if self.chapters:
+            target = min(selected if selected is not None else 0, len(self.chapters) - 1)
+            for row in range(self.chapter_list.count()):
+                if self.chapter_list.item(row).data(Qt.UserRole) == target:
+                    self.chapter_list.setCurrentRow(row)
+                    break
+
+    def _show_chapter_preview(self, current, previous=None):
+        idx = current.data(Qt.UserRole) if current else None
+        if idx is None or not self.chapters:
+            self.chapter_preview.clear()
+            return
+        chapter = self.chapters[idx]
+        content = [block.text or block.alt for block in chapter.blocks
+                   if block.kind in ("para", "heading", "pre", "image")]
+        self.chapter_preview.setPlainText("\n\n".join(text for text in content if text))
 
     def _selected_index(self) -> int | None:
         item = self.chapter_list.currentItem()
@@ -560,11 +590,12 @@ class MainWindow(QMainWindow):
         chapters_copy = [Chapter(ch.title, list(ch.blocks), ch.volume)
                          for ch in self.chapters]
         meta_copy = meta
+        doc = self.doc
+        part_pages = self.part_pages_check.isChecked()
 
         def task(cb):
-            return _build_task(self.doc, chapters_copy, meta_copy, out_path,
-                               cover_bytes, cover_name,
-                               self.part_pages_check.isChecked(), cb)
+            return _build_task(doc, chapters_copy, meta_copy, out_path,
+                               cover_bytes, cover_name, part_pages, cb)
 
         self._start_worker(task, self._on_built, extra={"out": out_path})
 
@@ -582,14 +613,13 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is open_btn:
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(out_path)))
-        # 生成完成：清除上一次填写的内容，方便开始下一次转换
-        self._clear_form(clear_source=True)
-        self._log("已清除表单内容，可以开始下一次转换。")
+        self.statusBar().showMessage(f"已生成: {out_path}", 12000)
 
     # ---------------- 通用 ----------------
 
     def _set_busy(self, busy: bool, text: str):
         self._set_gen_enabled(not busy and bool(self.chapters))
+        self.analyze_btn.setEnabled(not busy and bool(self.source_path))
         if busy:
             self.progress.setValue(0)
         self.statusBar().showMessage(text)

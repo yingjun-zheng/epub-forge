@@ -20,6 +20,7 @@ from pathlib import Path
 from .blocks import Block, ParsedDocument
 from .chapter import TEXT_HEADING_PATTERNS as _TITLE_HINT_RE
 from .chapter import VOLUME_PATTERNS as _VOLUME_HINT_RE
+from .chapter import _detect_text_headings
 from .utils import clean_text, escape_html, infer_title_from_filename, read_text_with_fallback
 
 SUPPORTED_EXT = {
@@ -145,11 +146,24 @@ def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument
         for ln in lines:
             blocks.append(Block(kind="para", text=re.sub(r"[ \t]+", " ", ln)))
     else:
-        # 空行分段：段内多行合并为一段
+        # 空行分段：保留嵌在连续正文中的独立章节标题行。
         for raw in re.split(r"\n[ \t]*\n", cleaned):
-            para = " ".join(ln.strip() for ln in raw.split("\n") if ln.strip())
-            if para:
-                blocks.append(Block(kind="para", text=para))
+            pending: list[str] = []
+            for line in (ln.strip() for ln in raw.split("\n")):
+                if not line:
+                    continue
+                candidate = Block(kind="para", text=line)
+                is_heading = bool(_detect_text_headings([candidate]) or
+                                  _detect_text_headings([candidate], _VOLUME_HINT_RE))
+                if is_heading:
+                    if pending:
+                        blocks.append(Block(kind="para", text=" ".join(pending)))
+                        pending = []
+                    blocks.append(candidate)
+                else:
+                    pending.append(line)
+            if pending:
+                blocks.append(Block(kind="para", text=" ".join(pending)))
 
     # 超长段落自动在句末分行（识别“顶行/无空行”合并出的文字墙）
     blocks = _split_long_paras(blocks)
