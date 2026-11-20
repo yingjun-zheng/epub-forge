@@ -56,6 +56,10 @@ def main():
         "PySide6.QtMultimedia", "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
         "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtBluetooth",
+        # 本项目无网络功能。系统 Python 里的 yt_dlp 会经其内置 PyInstaller
+        # hook 连带拖入一批网络依赖（曾致 exe 从 145MB 暴涨到 2.6GB）
+        "yt_dlp", "yt_dlp_ejs", "requests", "urllib3", "curl_cffi",
+        "Cryptodome", "mutagen", "brotli", "secretstorage", "websockets",
     ]
     for e in excludes:
         args += ["--exclude-module", e]

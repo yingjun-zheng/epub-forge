@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import base64
+import collections
 import re
 from pathlib import Path
 
@@ -47,7 +48,8 @@ def parse_document(path: str | Path, txt_para_mode: str = "auto",
                    ocr: bool = False, progress_cb=None) -> ParsedDocument:
     """按扩展名分派到具体解析器。
 
-    txt_para_mode: TXT 段落识别方式 —— auto（启发式）/ blank（空行分段）/ line（每行一段）
+    txt_para_mode: TXT 段落识别方式 —— auto（启发式）/ blank（空行分段）/
+                    line（每行一段）/ hardwrap（硬换行重排）
     ocr:           PDF 无文字层时是否启用 OCR 识别（扫描版）
     progress_cb:   可选回调 cb(percent, msg)，用于报告解析进度
     """
@@ -79,11 +81,83 @@ def parse_document(path: str | Path, txt_para_mode: str = "auto",
 _SENT_ENDINGS = ("。", "！", "？", "”", "』", "」", "…", "…", ".", "!", "?",
                  '"', "'", "）", ")", "】", "]", "》", "〉", "；", "，", ";", ",")
 
+# 段落语义完结标点（不含逗号/分号——句中停顿不算段落完结）
+_PARA_END = ("。", "！", "？", "…", "」", "』", "”", ".", "!", "?", '"')
+_OPEN_QUOTES = "「『“\"'"
+
+# 硬换行排版特征：行首普遍带缩进 + 行尾多为句中标点（不完整句）。
+# 对照组"每行一段"的正规 TXT 行尾几乎都是完整句末标点、且通常无缩进。
+_HARDWRAP_INDENT_RATIO = 0.6    # 带缩进行占比下限
+_HARDWRAP_PARA_END_RATIO = 0.75 # 行尾段落完结占比上限
+
+
+def _looks_hardwrap(raw_lines: list[str]) -> bool:
+    """判断是否为老式硬换行排版（一段话被固定宽度硬切成多行、段间无空行）。
+
+    与"每行一段"排版的区分: 硬换行的行尾大量停留在句中（逗号/词中），
+    而每行一段的文件行尾几乎都是段落完结标点。
+    """
+    if not raw_lines:
+        return False
+    indented = sum(1 for ln in raw_lines if ln[:1] in (" ", "\u3000", "\t"))
+    para_ended = sum(1 for ln in raw_lines if ln.rstrip().endswith(_PARA_END))
+    return (indented / len(raw_lines) >= _HARDWRAP_INDENT_RATIO
+            and para_ended / len(raw_lines) <= _HARDWRAP_PARA_END_RATIO)
+
+
+def _rejoin_hardwrap(raw_lines: list[str]) -> list[Block]:
+    """硬换行重排: 把被固定宽度硬切的行合并回自然段。
+
+    段首判定（满足其一即开新段）:
+      * 行缩进深于基础缩进（老式排版段首多缩两格，如 8 空格 vs 基础 4）;
+      * 行首是对话开引号且上一行已语义完结（对话起新段的常见排版）;
+      * 缩进浅于基础缩进的行（无缩进的标题行）独立成段;
+      * 空行强制断段。
+    其余行直接拼接（中文无空格），恢复被硬切进行中的词句（如「不好意/
+    思地走了！」）。
+    """
+    leads = [len(ln) - len(ln.lstrip(" \u3000\t")) for ln in raw_lines if ln.strip()]
+    common = collections.Counter(l for l in leads if l > 0).most_common(1)
+    base = common[0][0] if common else 0
+    paras: list[str] = []
+    cur = ""
+    prev_done = True  # 上一行是否语义完结（句末/引号闭合）
+    for ln in raw_lines:
+        ln = ln.rstrip()
+        if not ln.strip():
+            if cur:
+                paras.append(cur)
+                cur = ""
+            prev_done = True
+            continue
+        lead = len(ln) - len(ln.lstrip(" \u3000\t"))
+        body = ln.strip()
+        if lead < base:
+            # 浅缩进行（无缩进的标题行等）→ 强制独立成段，其后必开新段
+            if cur:
+                paras.append(cur)
+                cur = ""
+            paras.append(body)
+            prev_done = True
+            continue
+        if not cur:
+            cur = body
+        elif lead > base or (body[0] in _OPEN_QUOTES and prev_done):
+            paras.append(cur)
+            cur = body
+        else:                        # 续行: 直接拼接，恢复被切开的词句
+            cur += body
+        prev_done = body.endswith(_PARA_END)
+    if cur:
+        paras.append(cur)
+    return [Block(kind="para", text=p) for p in paras if p]
+
 
 def _detect_txt_para_mode(lines: list[str], cleaned: str) -> str:
     """启发式判断 TXT 段落排布。
 
     逐行排布（每行一个自然段，常见于中文小说）: 大多数行以句末标点结尾且行较短。
+    硬换行排版: 行首普遍带缩进且行尾多为句中标点——需把行合并回自然段。
     空行分段: 段落之间有空行，段内多行。
     无空行/少空行且行尾标点少: 按行分段兜底——避免把整章并成一大段“文字墙”。
     """
@@ -91,13 +165,13 @@ def _detect_txt_para_mode(lines: list[str], cleaned: str) -> str:
         return "blank"
     end_count = sum(1 for ln in lines if ln.endswith(_SENT_ENDINGS))
     ratio = end_count / len(lines)
-    avg_len = sum(len(ln) for ln in lines) / len(lines)
+    avg_len = sum(len(ln.strip()) for ln in lines) / len(lines)
     if ratio >= 0.55 and avg_len <= 80:
-        return "line"
+        return "hardwrap" if _looks_hardwrap(lines) else "line"
     # 空行数量明显偏少（平均每 3 行不足 1 个空行）→ 段落边界只能靠行
     blank_count = max(len(re.split(r"\n[ \t]*\n", cleaned)) - 1, 0)
     if blank_count * 3 < len(lines):
-        return "line"
+        return "hardwrap" if _looks_hardwrap(lines) else "line"
     return "blank"
 
 
@@ -135,13 +209,19 @@ def _split_long_paras(blocks: list[Block]) -> list[Block]:
 
 def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument:
     cleaned = clean_text(text)
-    lines = [ln.strip() for ln in cleaned.split("\n") if ln.strip()]
+    # raw_lines 保留行首缩进（硬换行重排需要缩进判段），lines 为去缩进行
+    raw_lines = [ln.rstrip() for ln in cleaned.split("\n") if ln.strip()]
+    lines = [ln.strip() for ln in raw_lines]
     mode = para_mode
     if mode == "auto":
-        mode = _detect_txt_para_mode(lines, cleaned)
+        mode = _detect_txt_para_mode(raw_lines, cleaned)
 
     blocks: list[Block] = []
-    if mode == "line":
+    if mode == "hardwrap":
+        # 硬换行重排: 行首缩进行占比高且行尾多为句中标点时，把被固定宽度
+        # 硬切的行合并回自然段（段落边界按深缩进/新开对话判定）
+        blocks = _rejoin_hardwrap(raw_lines)
+    elif mode == "line":
         # 每行视为一个自然段（保留行内软空格）
         for ln in lines:
             blocks.append(Block(kind="para", text=re.sub(r"[ \t]+", " ", ln)))
@@ -180,7 +260,9 @@ def _parse_txt(path: Path, text: str, para_mode: str = "auto") -> ParsedDocument
             title = first
             blocks.pop(0)
     doc = ParsedDocument(source_path=str(path), fmt="txt", title=title, blocks=blocks)
-    if mode == "line":
+    if mode == "hardwrap":
+        doc.warnings.append(f"检测到硬换行排版，已将断行合并回自然段（共 {len(blocks)} 段）。")
+    elif mode == "line":
         doc.warnings.append(f"检测到逐行排布，已按每行一段解析（共 {len(blocks)} 段）。")
     if not blocks:
         doc.warnings.append("未解析到任何正文内容。")

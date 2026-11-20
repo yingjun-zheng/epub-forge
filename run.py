@@ -52,8 +52,10 @@ def _cli_main(argv):
     p.add_argument("--regex", default="", help="自定义章节正则（--mode regex 时生效）")
     p.add_argument("--paras", type=int, default=8, help="按篇幅时每章段落数（默认 8）")
     p.add_argument("--min-chars", type=int, default=500, help="少于该字数不分章（默认 500）")
-    p.add_argument("--txt-paras", default="auto", choices=["auto", "blank", "line"],
-                   help="TXT 分段方式：auto 自动 / blank 空行分段 / line 每行一段（默认 auto）")
+    p.add_argument("--txt-paras", default="auto",
+                   choices=["auto", "blank", "line", "hardwrap"],
+                   help="TXT 分段方式：auto 自动 / blank 空行分段 / line 每行一段 /"
+                        " hardwrap 硬换行重排（默认 auto）")
     p.add_argument("--ocr", action="store_true",
                    help="扫描版 PDF 启用 OCR 识别（无文字层时，速度较慢）")
     p.add_argument("--no-split", action="store_true",

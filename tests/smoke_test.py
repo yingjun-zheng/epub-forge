@@ -4,6 +4,7 @@
 用法: python tests/smoke_test.py
 """
 import os
+import re
 import sys
 import zipfile
 
@@ -253,6 +254,55 @@ def run():
     except Exception as exc:
         failed += 1
         print(f"!! 标题识别用例异常: {exc}")
+
+    # ---- 附加：硬换行重排（老式 TXT：固定宽度硬切、段间无空行） ----
+    try:
+        import tempfile
+        hw_text = (
+            "第二章\n"
+            "    「今天天气不错。」老王说着把茶杯放到桌\n"
+            "    子上，看向窗外。\n"
+            "    「是啊，难得没有下雨。」老李点了点头，\n"
+            "    心里却想着别的事。\n"
+            "        「那个项目的事，你听说了吗？」老王压\n"
+            "    低了声音问道。\n"
+        )
+        fd, hw_path = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(hw_text)
+        try:
+            hw_doc = parse_document(hw_path)
+            hw_blocks = [b.text for b in hw_doc.blocks]
+            # 断言: 4 块（标题独立 + 3 个自然段），词中断行已合并
+            if not any("硬换行" in w for w in hw_doc.warnings):
+                failed += 1
+                print(f"!! 硬换行用例: 未触发重排模式，警告={hw_doc.warnings}")
+            elif len(hw_blocks) != 4:
+                failed += 1
+                print(f"!! 硬换行用例: 段数应为 4（标题+3段），实际 {len(hw_blocks)}: {hw_blocks}")
+            else:
+                if "桌子上" not in hw_blocks[1] or "茶杯放到桌子上" not in hw_blocks[1]:
+                    failed += 1
+                    print(f"!! 硬换行用例: 「桌/子」跨行合并失败: {hw_blocks[1][:30]}")
+                if not hw_blocks[3].startswith("「那个项目的事"):
+                    failed += 1
+                    print(f"!! 硬换行用例: 深缩进段首未独立成段: {hw_blocks[3][:30]}")
+                if hw_blocks[0] != "第二章":
+                    failed += 1
+                    print(f"!! 硬换行用例: 标题行未独立成段: {hw_blocks[0]!r}")
+                # 拼接后不得丢字
+                src_chars = len(re.sub(r"\s+", "", hw_text))
+                got_chars = sum(len(t) for t in hw_blocks)
+                if got_chars != src_chars:
+                    failed += 1
+                    print(f"!! 硬换行用例: 字数不符 源{src_chars} vs 出{got_chars}")
+        finally:
+            os.remove(hw_path)
+        if failed == 0:
+            print("[硬换行重排] 用例通过（标题独立/词中合并/深缩进分段/无丢字）")
+    except Exception as exc:
+        failed += 1
+        print(f"!! 硬换行用例异常: {exc}")
 
     print(f"\n{'全部通过' if failed == 0 else f'{failed} 个失败'}")
     return 1 if failed else 0

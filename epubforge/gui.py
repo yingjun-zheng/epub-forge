@@ -207,7 +207,8 @@ class MainWindow(QMainWindow):
         form.addRow("分章控制:", self.no_split_radio)
 
         self.txt_mode_combo = QComboBox()
-        for label, key in [("自动（推荐）", "auto"), ("空行分段", "blank"), ("每行一段", "line")]:
+        for label, key in [("自动（推荐）", "auto"), ("空行分段", "blank"),
+                           ("每行一段", "line"), ("硬换行重排", "hardwrap")]:
             self.txt_mode_combo.addItem(label, key)
         form.addRow("TXT 分段:", self.txt_mode_combo)
 
